@@ -120,7 +120,7 @@ Testado em Arch Linux (Hyprland, Wayland) com Python 3.14, numpy 2.5, scipy 1.18
 ## Instalação
 
 ```bash
-git clone https://github.com/<seu-usuario>/djscope.git
+git clone https://github.com/Serg-Ale/djscope.git
 cd djscope
 ./install.sh          # cria .venv, instala as dependências e os comandos `djscope` e `djscope-tui`
 ```
