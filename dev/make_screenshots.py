@@ -26,9 +26,15 @@ TRACKS = [("Sunrise Loop", "Demo Artist", 128, 0), ("Midnight Run", "Demo Artist
           ("Deep Cut", "Demo Artist", 124, 7), ("Closer", "Demo Artist", 130, -3)]
 for title, artist, bpm, shift in TRACKS:
     x = core.Demo(bpm, key_shift=shift).render(np.arange(62 * 48000) / 48000)
-    info = {"status": "Playing", "title": title, "artist": artist}
-    win.nowplaying = type("NP", (), {"info": info, "close": lambda s: None})()
-    for j in range(0, len(x), 800): win.process(x[j:j + 800])
+    pos = [0.0]
+
+    class NP:                                   # "player" falso: título, duração e posição como no MPRIS
+        info = property(lambda self: {"status": "Playing", "title": title, "artist": artist, "length": 192.0, "position": pos[0]})
+        def close(self): pass
+    win.nowplaying = NP()
+    for j in range(0, len(x), 800):
+        pos[0] = j / 48000
+        win.process(x[j:j + 800])
     print("processado:", title, flush=True)
 
 

@@ -30,7 +30,7 @@ visual. A versão de terminal continua no repositório (`djscope-tui`).
 | **Spectrogram** | 30 s de histórico em escala de cores. |
 | **Loudness** | Momentary / short-term / integrated (ITU-R BS.1770, com K-weighting e gating), histórico de 60 s e referência de −14 LUFS. |
 | **Levels** | Picos L/R com retenção, LUFS-M, **true peak** (sobreamostragem 4×) e contador de clips no título. |
-| **Set** | Faixa atual (título/artista via MPRIS), histórico do set com BPM, key, LUFS-I e a **relação harmônica com a faixa anterior** (`=`, `±1`, `rel`, `±2`, `✗`). Salva um CSV automaticamente. |
+| **Set** | **Faixa atual** (título/artista via MPRIS) com **linha do tempo** (curva de loudness desde o início, playhead e a *zona de saída* dos últimos 32 s), **tempo restante** (fica âmbar a 60 s e vermelho a 20 s), BPM/key/LUFS-I; bloco **próxima faixa** (as 4 tonalidades compatíveis e a janela de BPM de ±3 %/±6 % de pitch); e o histórico do set com a **relação harmônica com a faixa anterior** (`=`, `±1`, `rel`, `±2`, `✗`). Salva um CSV automaticamente. |
 
 ### Barra de decisão e presets
 

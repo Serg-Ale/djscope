@@ -124,6 +124,19 @@ check(len(tl2.tracks) == 0, "meio-tempo (128 -> 64) NÃO cria faixa nova")
 tl.finish(now=1400.0)
 check(os.path.exists(tl.path) and open(tl.path, encoding="utf-8").read().count("\n") >= 4, "CSV do set foi salvo")
 
+print("== linha do tempo da faixa (perfil de loudness + posição do player)")
+e = d.Engine(); tl = d.TrackLog(e, outdir=tempfile.mkdtemp(prefix="djscope-check-")); tl.t0 = 0.0; e.rms_db = -20
+info = {"status": "Playing", "title": "P", "artist": "Q", "length": 200.0, "position": 37.0}
+tl.tick(info, now=0.0)
+for i in range(1, 31):
+    e.lufs_m = -14.0 - 0.1 * i
+    tl.tick(info, now=float(i))
+snap = tl.snapshot(now=30.0)
+check(abs(snap["pos0"] - 37.0) < 1e-6, "posição inicial vem do player (alinha a linha do tempo com o que já tinha tocado)")
+check(25 <= len(snap["prof"]) <= 31 and snap["prof"][0] > snap["prof"][-1], f"perfil de LUFS-M amostrado a 1 Hz ({len(snap['prof'])} pontos)")
+tl.boundary("manual", info, 31.0)
+check(len(tl.snapshot(now=32.0)["prof"]) <= 1, "o perfil reinicia na faixa nova")
+
 print()
 if failures:
     print(f"{len(failures)} verificação(ões) falharam"); sys.exit(1)

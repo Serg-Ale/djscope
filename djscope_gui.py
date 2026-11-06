@@ -1788,7 +1788,7 @@ class TracklistCard(Card):
 
     def right_text(self):
         a = self.app
-        return f"{len(a.tracklog.tracks)} faixas · {fmt_t(a.wall_now() - a.tracklog.t0)}"
+        return f"faixa {len(a.tracklog.tracks) + 1}  ·  set {fmt_t(a.wall_now() - a.tracklog.t0)}"
 
     def flash(self, text):
         self.note, self.note_t = text, time.time()
@@ -1801,42 +1801,157 @@ class TracklistCard(Card):
         p.setFont(font(11, MONO_FONT, QFont.Medium)); p.setPen(qc(col, 150 if dim else 255))
         p.drawText(r, Qt.AlignCenter, code + ("?" if dim else ""))
 
+    # ---- linha do tempo da faixa: loudness desde o começo, playhead e "zona de saída" (últimos 32 s)
+    def _timeline(self, p, r, snap, length, elapsed):
+        total = length if length > 0 else max(90.0, elapsed + 20.0)
+        p.setPen(Qt.NoPen); p.setBrush(qc((20, 23, 34))); p.drawRoundedRect(r, 7, 7)
+        p.save()
+        path = QPainterPath(); path.addRoundedRect(r, 7, 7); p.setClipPath(path)
+        if length > 0:
+            zx = r.left() + max(0.0, (length - 32.0) / total) * r.width()
+            p.setBrush(qc(ACC, 30)); p.drawRect(QRectF(zx, r.top(), r.right() - zx, r.height()))
+            if r.right() - zx > 52:
+                p.setFont(font(8, weight=QFont.DemiBold, spacing=1.2)); p.setPen(qc(ACC, 200))
+                p.drawText(QRectF(zx + 5, r.top() + 2, r.right() - zx - 8, 12), Qt.AlignLeft, "SAÍDA")
+        prof = snap["prof"] if snap else []
+        pos0 = snap["pos0"] if snap else 0.0
+        px = r.left() + min(1.0, elapsed / total) * r.width()
+        if len(prof) > 1:
+            lo, hi = -34.0, -6.0
+            X = lambda i: r.left() + min(1.0, (pos0 + i) / total) * r.width()
+            Y = lambda v: r.bottom() - 3 - min(1.0, max(0.0, (v - lo) / (hi - lo))) * (r.height() - 9)
+            pts = [QPointF(X(i), Y(v)) for i, v in enumerate(prof)]
+            poly = QtGui.QPolygonF([QPointF(pts[0].x(), r.bottom())] + pts + [QPointF(pts[-1].x(), r.bottom())])
+            gr = QLinearGradient(0, r.top(), 0, r.bottom())
+            gr.setColorAt(0, qc(ACC2, 140)); gr.setColorAt(1, qc(ACC2, 14))
+            p.setPen(Qt.NoPen); p.setBrush(gr); p.drawPolygon(poly)
+            p.setBrush(Qt.NoBrush); p.setPen(QPen(qc(ACC2, 230), 1.3)); p.drawPolyline(QtGui.QPolygonF(pts))
+        # marcas de minuto
+        p.setPen(QPen(QColor(255, 255, 255, 22), 1))
+        m = 60.0
+        while m < total:
+            xx = r.left() + m / total * r.width()
+            p.drawLine(QPointF(xx, r.bottom() - 5), QPointF(xx, r.bottom()))
+            m += 60.0
+        p.restore()
+        p.setPen(QPen(QColor(255, 255, 255, 235), 2)); p.drawLine(QPointF(px, r.top() + 1), QPointF(px, r.bottom() - 1))
+
     def paint_body(self, p, body):
         a, e, tl = self.app, self.app.eng, self.app.tracklog
         info = a.nowplaying.info if a.nowplaying else None
         snap = tl.snapshot(a.wall_now())
+        playing = bool(info and info.get("status") == "Playing")
         fmx = lambda txt, wpx: QFontMetricsF(p.font()).elidedText(txt, Qt.ElideRight, wpx)
         x0, W = body.left(), body.width()
         y = body.top() + 2
-        playing = info and info.get("status") == "Playing"
-        title = (snap and snap["title"]) or (info and playing and info.get("title")) or None
-        artist = (snap and snap["artist"]) or (info and playing and info.get("artist")) or ""
-        p.setFont(font(14, weight=QFont.DemiBold)); p.setPen(qc(TXT if title else DIM))
-        p.drawText(QPointF(x0, y + 15), fmx(title or ("Tocando…" if snap else "Aguardando áudio…"), W))
-        p.setFont(font(11)); p.setPen(qc(DIM))
-        el = fmt_t(snap["elapsed"]) if snap else "0:00"
-        p.drawText(QPointF(x0, y + 34), fmx((artist + "   ·   " if artist else "") + f"faixa {len(tl.tracks) + 1}  ·  {el}", W))
-        # estatísticas ao vivo da faixa atual
+        grand = body.height() > 520                                    # card grande (modo foco): tudo escala
+        title = (snap and snap["title"]) or (playing and info.get("title")) or None
+        artist = (snap and snap["artist"]) or (playing and info.get("artist")) or ""
+        length = float(info.get("length") or 0.0) if playing else 0.0
+        pos = info.get("position") if playing else None
+        elapsed = float(pos) if (pos is not None and length > 0) else ((snap["elapsed"] + snap["pos0"]) if snap else 0.0)
+        remain = max(0.0, length - elapsed) if length > 0 else None
+        # ---- A: título, artista, tempo restante
+        rw = 0.0
+        if remain is not None:
+            rc = qc(RED) if remain <= 20 else qc(ACC) if remain <= 60 else qc(TXT)
+            p.setFont(font(8, weight=QFont.DemiBold, spacing=1.4)); p.setPen(qc(DIM)); lab_w = QFontMetricsF(p.font()).horizontalAdvance("RESTA")
+            txt = f"−{fmt_t(remain)}"
+            p.setFont(font(22, MONO_FONT, QFont.Medium)); rw = QFontMetricsF(p.font()).horizontalAdvance(txt)
+            p.setPen(rc); p.drawText(QPointF(x0 + W - rw, y + 24), txt)
+            p.setFont(font(8, weight=QFont.DemiBold, spacing=1.4)); p.setPen(qc(DIM)); p.drawText(QPointF(x0 + W - rw, y + 6), "RESTA")
+        p.setFont(font(22 if grand else 15, weight=QFont.DemiBold)); p.setPen(qc(TXT if title else DIM))
+        p.drawText(QPointF(x0, y + (24 if grand else 17)), fmx(title or ("Tocando…" if snap else "Aguardando áudio…"), W - rw - 14))
+        p.setFont(font(14 if grand else 11)); p.setPen(qc(DIM))
+        tm = f"{fmt_t(elapsed)} / {fmt_t(length)}" if length > 0 else fmt_t(elapsed)
+        p.drawText(QPointF(x0, y + (48 if grand else 36)), fmx((artist + "   ·   " if artist else "") + tm, W - rw - 14))
+        # ---- B: linha do tempo
+        th = 96 if grand else 34 if body.height() > 230 else 24
+        ty = y + (62 if grand else 46)
+        self._timeline(p, QRectF(x0, ty, W, th), snap, length, elapsed)
+        # ---- C: estatísticas ao vivo da faixa
         ky = e.key_info()
         bpm = (snap and snap["bpm"]) or e.bpm
-        yy = y + 62
-        p.setFont(font(20, MONO_FONT, QFont.Medium)); p.setPen(qc(ACC))
         sure = e.conf >= 0.2
+        yy = ty + th + (44 if grand else 28)
+        p.setFont(font(30 if grand else 20, MONO_FONT, QFont.Medium)); p.setPen(qc(ACC if sure else (150, 138, 118)))
         txt = (f"{bpm:.1f}" if sure else f"~{bpm:.0f}") if bpm else "---"
-        if not sure: p.setPen(qc((150, 138, 118)))
         p.drawText(QPointF(x0, yy), txt)
         adv = QFontMetricsF(p.font()).horizontalAdvance(txt)
         p.setFont(font(9, weight=QFont.DemiBold, spacing=1.3)); p.setPen(qc(DIM)); p.drawText(QPointF(x0 + adv + 5, yy), "BPM")
-        xk = x0 + adv + 52
+        xk = x0 + adv + (60 if grand else 52)
         if ky: self._badge(p, xk, yy - 3, ky["camelot"], ky["level"], 44)
         if W > 330:
             li = f"{e.lufs_i:.1f}" if e.lufs_i is not None else "---"
-            p.setFont(font(15, MONO_FONT, QFont.Medium)); p.setPen(qc(ACC2)); p.drawText(QPointF(xk + 64, yy), li)
-            p.setFont(font(9, weight=QFont.DemiBold, spacing=1.3)); p.setPen(qc(DIM)); p.drawText(QPointF(xk + 64 + 52, yy), "LUFS-I")
-        # lista
-        ly = yy + 16
-        rows_h = body.bottom() - 16 - ly
-        if rows_h < 26: return
+            p.setFont(font(22 if grand else 15, MONO_FONT, QFont.Medium)); p.setPen(qc(ACC2)); p.drawText(QPointF(xk + 64, yy), li)
+            p.setFont(font(9, weight=QFont.DemiBold, spacing=1.3)); p.setPen(qc(DIM)); p.drawText(QPointF(xk + 64 + (74 if grand else 52), yy), "LUFS-I")
+        y_next = yy + (24 if grand else 14)
+        bottom = body.bottom() - 16
+        has_tracks = len(tl.tracks) > 0
+        # ---- D: próxima faixa (compatíveis + janela de BPM)
+        ndrawn = 0
+        if ky or bpm:
+            big = (not has_tracks or grand) and (bottom - y_next >= 78)
+            hgt = 74 if big else 26
+            if bottom - y_next >= hgt:
+                self._next(p, x0, y_next, W, ky, bpm if sure else None, big)
+                ndrawn = hgt + 8
+        # ---- E: histórico do set
+        ly = y_next + ndrawn
+        rows_h = bottom - ly
+        if rows_h >= 40 and has_tracks:
+            self._list(p, body, ly, bottom)
+        elif not has_tracks and rows_h >= 24:
+            p.setFont(font(10)); p.setPen(qc((70, 78, 108)))
+            p.drawText(QRectF(x0, ly + 4, W, 30), Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap,
+                       "O histórico do set aparece aqui quando a próxima faixa começar (por título, silêncio ou salto de BPM).")
+        # ---- rodapé
+        p.setFont(font(9, MONO_FONT)); p.setPen(qc((70, 78, 108)))
+        foot = self.note if (self.note and time.time() - self.note_t < 4) else "N nova faixa · E salvar CSV"
+        p.drawText(QRectF(x0, body.bottom() - 13, W, 13), Qt.AlignLeft | Qt.AlignVCenter, fmx(foot, W))
+
+    def _next(self, p, x0, y0, W, ky, bpm, big):
+        """O que procurar para a próxima faixa: tonalidades compatíveis e janela de BPM (±3 % / ±6 % de pitch)."""
+        codes = []
+        if ky:
+            nn, l2 = int(ky["camelot"][:-1]), ky["camelot"][-1]
+            opp = "A" if l2 == "B" else "B"
+            codes = [(f"{(nn - 2) % 12 + 1}{l2}", "−1"), (f"{nn % 12 + 1}{l2}", "+1"), (f"{nn}{opp}", "REL"), (f"{(nn + 1) % 12 + 1}{l2}", "+2")]
+        p.setFont(font(9, weight=QFont.DemiBold, spacing=1.4)); p.setPen(qc((78, 86, 118)))
+        p.drawText(QPointF(x0, y0 + 10), "PRÓXIMA FAIXA")
+        bx = x0
+        by = y0 + (18 if big else 0)
+        if not big: bx = x0 + 104
+        for code, why in codes:
+            col = camelot_rgb(code)
+            rr = QRectF(bx, by if big else y0 - 3, 40, 22 if big else 20)
+            p.setPen(Qt.NoPen); p.setBrush(qc(col, 52)); p.drawRoundedRect(rr, 6, 6)
+            p.setFont(font(12 if big else 11, MONO_FONT, QFont.Medium)); p.setPen(qc(col)); p.drawText(rr, Qt.AlignCenter, code)
+            if big:
+                p.setFont(font(8, weight=QFont.DemiBold, spacing=0.8)); p.setPen(qc((78, 86, 118)))
+                p.drawText(QRectF(bx, rr.bottom() + 2, 40, 11), Qt.AlignHCenter, why)
+            bx += 46
+        if bpm:
+            f3, f6 = (bpm * 0.97, bpm * 1.03), (bpm * 0.94, bpm * 1.06)
+            if big and W > 380:
+                tx = x0 + 4 * 46 + 14
+                p.setFont(font(9, weight=QFont.DemiBold, spacing=1.2)); p.setPen(qc((78, 86, 118)))
+                p.drawText(QPointF(tx, y0 + 28), "BPM  ±3%"); p.drawText(QPointF(tx, y0 + 52), "BPM  ±6%")
+                p.setFont(font(13, MONO_FONT, QFont.Medium)); p.setPen(qc(TXT))
+                p.drawText(QPointF(tx + 70, y0 + 28), f"{f3[0]:.0f}–{f3[1]:.0f}")
+                p.setPen(qc(DIM)); p.drawText(QPointF(tx + 70, y0 + 52), f"{f6[0]:.0f}–{f6[1]:.0f}")
+            elif big:
+                p.setFont(font(11, MONO_FONT)); p.setPen(qc(TXT))
+                p.drawText(QPointF(x0, y0 + 74), f"BPM {f3[0]:.0f}–{f3[1]:.0f} (±3%)")
+            else:
+                p.setFont(font(11, MONO_FONT)); p.setPen(qc(TXT))
+                p.drawText(QPointF(bx + 6, y0 + 15), f"{f3[0]:.0f}–{f3[1]:.0f} bpm")
+
+    def _list(self, p, body, ly, bottom):
+        """Faixas anteriores do set: início, título, BPM, key, mix com a anterior e LUFS-I."""
+        tl = self.app.tracklog
+        fmx = lambda txt, wpx: QFontMetricsF(p.font()).elidedText(txt, Qt.ElideRight, wpx)
+        x0, W = body.left(), body.width()
         p.setPen(QPen(qc(BORDER), 1)); p.drawLine(QPointF(x0, ly), QPointF(x0 + W, ly))
         cols_rel, cols_lufs = W > 300, W > 380
         right = x0 + W
@@ -1852,12 +1967,12 @@ class TracklistCard(Card):
         p.drawText(QPointF(c_bpm, hy), "BPM"); p.drawText(QPointF(c_key + 4, hy), "KEY")
         if cols_rel: p.drawText(QPointF(c_rel + 4, hy), "MIX")
         if cols_lufs: p.drawText(QPointF(c_lufs + 2, hy), "LUFS")
-        rh = 22
+        rh = 28 if (bottom - ly) > 420 else 22
         top = hy + 8
-        nrows = int((body.bottom() - 16 - top) // rh)
+        nrows = int((bottom - top) // rh)
         recs = list(reversed(tl.tracks))[:max(0, nrows)]
         for i, t in enumerate(recs):
-            ry = top + i * rh + 15
+            ry = top + i * rh + (18 if rh > 22 else 15)
             prev = tl.tracks[t["n"] - 2] if t["n"] >= 2 else None
             if i % 2 == 0:
                 p.setPen(Qt.NoPen); p.setBrush(QColor(255, 255, 255, 6)); p.drawRoundedRect(QRectF(x0 - 4, top + i * rh, W + 8, rh), 4, 4)
@@ -1865,7 +1980,7 @@ class TracklistCard(Card):
             p.drawText(QPointF(x0, ry), f"{t['n']}"); p.drawText(QPointF(x0 + 22, ry), fmt_t(t["start_off"]))
             p.setFont(font(11)); p.setPen(qc(TXT))
             name = (t["title"] or "—") + (f" · {t['artist']}" if t["artist"] and W > 420 else "")
-            p.drawText(QPointF(c_title + 14 if False else c_title, ry), fmx(name, max(30, c_bpm - c_title - 6)))
+            p.drawText(QPointF(c_title, ry), fmx(name, max(30, c_bpm - c_title - 6)))
             p.setFont(font(11, MONO_FONT)); p.setPen(qc(TXT))
             p.drawText(QPointF(c_bpm, ry), f"{t['bpm']:.0f}" if t["bpm"] else "--")
             if t["camelot"]: self._badge(p, c_key, ry - 1, t["camelot"], t["key_level"] or "alta", 38)
@@ -1874,14 +1989,6 @@ class TracklistCard(Card):
                 p.setFont(font(11, weight=QFont.DemiBold)); p.setPen(qc(col)); p.drawText(QPointF(c_rel + 6, ry), sym)
             if cols_lufs and t["lufs_i"] is not None:
                 p.setFont(font(10, MONO_FONT)); p.setPen(qc(ACC2)); p.drawText(QPointF(c_lufs + 2, ry), f"{t['lufs_i']:.1f}")
-        if not recs and nrows > 0:
-            p.setFont(font(10)); p.setPen(qc((78, 86, 118)))
-            p.drawText(QRectF(x0, top + 6, W, 30), Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap,
-                       "As faixas aparecem aqui conforme o set avança.\nTrocas são detectadas por título, silêncio ou salto de BPM.")
-        # rodapé
-        p.setFont(font(9, MONO_FONT)); p.setPen(qc((70, 78, 108)))
-        foot = self.note if (self.note and time.time() - self.note_t < 4) else "N nova faixa · E salvar CSV"
-        p.drawText(QRectF(x0, body.bottom() - 13, W, 13), Qt.AlignLeft | Qt.AlignVCenter, fmx(foot, W))
 
 
 # ================================================================ app

@@ -369,9 +369,13 @@ class NowPlaying(threading.Thread):
                 md = _busctl("get-property", n, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Metadata")["data"]
             except Exception:
                 continue
+            try:
+                position = _busctl("get-property", n, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Position")["data"] / 1e6
+            except Exception:
+                position = None
             g = lambda k, d=None: md.get(k, {}).get("data", d)
             info = dict(player=n.split(".")[-1], status=st, title=g("xesam:title"), artist=", ".join(g("xesam:artist", []) or []),
-                        album=g("xesam:album"), length=(g("mpris:length", 0) or 0) / 1e6)
+                        album=g("xesam:album"), length=(g("mpris:length", 0) or 0) / 1e6, position=position)
             if st == "Playing": return info
             best = best or info
         return best
@@ -392,13 +396,16 @@ class TrackLog:
         self.src_title = None
         self.bpm_all, self.bpm_recent = [], deque(maxlen=12)
         self.last_sample, self.jump_since = 0.0, None
+        self.prof = []
 
     # ---- ciclo de vida de uma faixa
     def _start(self, info, now, reason):
         title = info.get("title") if info and info.get("status") == "Playing" else None
         self.src_title = title
-        self.cur = dict(start=now, title=title, artist=(info or {}).get("artist") if title else None, reason=reason)
+        pos0 = float((info or {}).get("position") or 0.0) if title else 0.0     # onde da faixa o app começou a ouvir
+        self.cur = dict(start=now, title=title, artist=(info or {}).get("artist") if title else None, reason=reason, pos0=pos0)
         self.bpm_all.clear(); self.bpm_recent.clear(); self.jump_since = None
+        self.prof = []                                                   # LUFS momentâneo a 1 Hz desde o começo desta faixa
 
     def _finalize(self, now, reason_end):
         c = self.cur
@@ -443,6 +450,7 @@ class TrackLog:
         # amostra de BPM (1 Hz) e salto sustentado de andamento
         if now - self.last_sample >= 1.0:
             self.last_sample = now
+            self.prof.append(float(e.lufs_m))
             if e.bpm and e.conf > 0.2:
                 self.bpm_all.append(e.bpm); self.bpm_recent.append(e.bpm)
             if len(self.bpm_all) >= 40 and len(self.bpm_recent) >= 10:
@@ -461,7 +469,8 @@ class TrackLog:
         now = now if now is not None else time.time()
         c = self.cur
         return dict(title=c["title"], artist=c["artist"], elapsed=now - c["start"], n=len(self.tracks) + 1,
-                    bpm=(float(np.median(self.bpm_all)) if len(self.bpm_all) >= 3 else None), reason=c["reason"])
+                    bpm=(float(np.median(self.bpm_all)) if len(self.bpm_all) >= 3 else None), reason=c["reason"],
+                    prof=list(self.prof), pos0=c.get("pos0", 0.0))
 
     def save(self):
         try:
