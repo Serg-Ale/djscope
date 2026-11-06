@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+*.f32
+*.tmp
+.DS_Store

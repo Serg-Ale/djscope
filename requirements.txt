@@ -1,0 +1,5 @@
+numpy
+scipy
+PySide6-Essentials
+# só para dev/topng.py (renderiza a versão de terminal em PNG); opcional
+pillow
