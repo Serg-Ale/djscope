@@ -23,7 +23,8 @@ visual. A versão de terminal continua no repositório (`djscope-tui`).
 
 | Painel | O que tem |
 |---|---|
-| **Waveform** | Rolagem em 3 bandas (graves azul · médios âmbar · agudos branco; ou tema RGB), beatgrid, **compassos numerados, início de frase em âmbar**, overview dos últimos 30 s–2 min com a janela atual marcada. No título: **BPM**, **tonalidade (Camelot)**, LEDs de compasso, contagem regressiva da frase, LUFS-M / LUFS-I. |
+| **Barra de decisão** (fixa no topo) | O que decide a mixagem, sempre à vista, inclusive no modo foco: **BPM** com LEDs de compasso, **tonalidade em Camelot** (com confiança e as 4 compatíveis: −1, +1, relativa, +2), **frase** (8 compassos + contagem regressiva), **LUFS** momentâneo e integrado, **true peak** com contador de clips e o selo de **mono do grave**. Também troca os presets. |
+| **Waveform** | Rolagem em 3 bandas (graves azul · médios âmbar · agudos branco; ou tema RGB), beatgrid, **compassos numerados, início de frase em âmbar**, overview dos últimos 30 s–2 min com a janela atual marcada. |
 | **Spectrum** | 4 modos: **CURVE** (curva suave com pico retido), **BARS** (LED em 1/6 de oitava), **3D** (waterfall em perspectiva) e **KEY** (cromagrama + roda Camelot + "combina com"). Passe o mouse para ver **frequência, nota musical e dB**. |
 | **Stereo** | 3 modos: **GONIO** (goniômetro colorido por banda + mini goniômetro, largura, correlação e histórico de 20 s para grave/médio/agudo), **POLAR** (nível polar por banda), **FIELD** (mapa panorama × frequência). Faixa inferior com **checagem de mono do grave (<120 Hz)** e perda ao somar em mono. |
 | **Spectrogram** | 30 s de histórico em escala de cores. |
@@ -31,11 +32,36 @@ visual. A versão de terminal continua no repositório (`djscope-tui`).
 | **Levels** | Picos L/R com retenção, LUFS-M, **true peak** (sobreamostragem 4×) e contador de clips no título. |
 | **Set** | Faixa atual (título/artista via MPRIS), histórico do set com BPM, key, LUFS-I e a **relação harmônica com a faixa anterior** (`=`, `±1`, `rel`, `±2`, `✗`). Salva um CSV automaticamente. |
 
+### Barra de decisão e presets
+
+A faixa no topo reúne o que importa na hora de escolher e entrar com a próxima música. Ao lado dela, **três presets**
+(`F1`/`F2`/`F3` ou clique nas pílulas) reorganizam os cards por tarefa — cada um já abre os modos certos:
+
+| Preset | Para quê | Composição |
+|---|---|---|
+| **F1 · MIX** | escolher e entrar com a próxima faixa | waveform alta · espectro em **KEY** (roda Camelot) · **SET** · stereo · spectrogram · loudness · levels |
+| **F2 · MASTER** | checar o som da saída | waveform · espectro em **CURVE** + stereo (gonio por banda) · loudness · levels · spectrogram |
+| **F3 · ANÁLISE** | olhar a música por dentro | waveform em faixa fina · espectro **3D** + **campo estéreo** · spectrogram · loudness · levels |
+
+![Barra de decisão](docs/screenshots/decision_bar.png)
+
+<table>
+<tr>
+<td><img src="docs/screenshots/preset_master.png" alt="Preset MASTER"></td>
+<td><img src="docs/screenshots/preset_analise.png" alt="Preset ANÁLISE"></td>
+</tr>
+<tr>
+<td align="center"><sub>F2 · MASTER</sub></td>
+<td align="center"><sub>F3 · ANÁLISE</sub></td>
+</tr>
+</table>
+
 ### Modo foco
 
 Dê **duplo clique** em qualquer card (ou use as teclas **1–7**) para torná-lo a visão principal, mantendo os outros
 em miniaturas — **na lateral** ou **numa tira embaixo** (tecla **L**). Clique numa miniatura para trocar o foco.
-O app lembra o layout, os modos e o tamanho da janela.
+No foco aparecem todos os cards, inclusive os que o preset oculta. O app lembra o preset, o foco, os modos e o
+tamanho da janela.
 
 <table>
 <tr>
@@ -122,8 +148,9 @@ djscope --source <nome>      # usa outra fonte do pactl (veja `djscope-tui --lis
 | `0` / `Esc` | sai do foco | | `D` | próximo modo do espectro |
 | `Tab` | percorre os cards em foco | | `G` | liga/desliga o beatgrid |
 | `L` | miniaturas na lateral ↔ embaixo | | `C` | tema da waveform (3-band / RGB) |
+| `F1` `F2` `F3` | presets MIX · MASTER · ANÁLISE | | | |
 | `+` / `-` | zoom da waveform | | `Espaço` | pausa a imagem |
-| `R` | zera LUFS integrado e picos | | `H` | mostra/oculta o header opcional |
+| `R` | zera LUFS integrado e picos | | `H` | mostra/oculta a barra de decisão |
 | `N` | marca **nova faixa** manualmente | | `E` | salva o CSV do set agora |
 | `F` / `F11` | tela cheia | | `Q` | sair |
 
@@ -148,7 +175,7 @@ O `motivo` diz como a troca de faixa foi detectada: `início`, `título` (MPRIS)
 djscope.py        motor de análise (Engine, KeyDetector, PhraseTracker, TrackLog, NowPlaying) + versão de terminal
 djscope_gui.py    interface Qt (cards, modo foco, StereoAnalyzer)
 dev/              make_screenshots.py (prints do README), topng.py (terminal → PNG)
-tests/            check_engine.py (verificações com áudio sintético de verdade conhecida)
+tests/            check_engine.py (motor, com áudio sintético de verdade conhecida) · check_ui.py (presets, foco, atalhos, persistência)
 ```
 
 - **Captura:** `parec` (float32, 48 kHz, estéreo) lido numa thread; tudo é processado em blocos de 1600 amostras (33 ms).
@@ -182,7 +209,8 @@ foi feito é checagem de plausibilidade (as faixas de teste não têm "gabarito"
 ## Desenvolvimento
 
 ```bash
-.venv/bin/python tests/check_engine.py        # ~1–2 min; sai com código 1 se algo falhar
+.venv/bin/python tests/check_engine.py        # motor: tonalidade, BPM, compasso/frase, true peak, mono do grave, tracklist (~1–2 min)
+.venv/bin/python tests/check_ui.py            # interface: presets, barra de decisão, modo foco, atalhos, persistência (~1 min)
 .venv/bin/python dev/make_screenshots.py      # regenera docs/screenshots/ (offscreen, áudio sintético)
 .venv/bin/python djscope_gui.py --shot out.png --secs 90 --size 1900x1034 --focus 2   # um print avulso
 ```
@@ -193,7 +221,7 @@ foi feito é checagem de plausibilidade (as faixas de teste não têm "gabarito"
 - Curva de energia da faixa (estilo Mixed In Key) no overview.
 - Comparação com a faixa anterior (espectro "fantasma" para casar graves e brilho na transição).
 - Cards como janelas flutuantes, sem moldura e transparentes (estilo widget de Rainmeter).
-- Presets de layout.
+- Presets editáveis pelo usuário (hoje são três fixos).
 
 ## Licença
 

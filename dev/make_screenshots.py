@@ -43,9 +43,10 @@ def shot(name, widget=None):
     print("salvo", name, flush=True)
 
 
-# visão geral
-win.stereo_mode, win.spec_mode, win.focus = 0, 0, None
+# visão geral = preset MIX (espectro em KEY); a barra de decisão aparece no topo
+win.set_preset(0)
 shot("overview.png")
+shot("decision_bar.png", win.header)
 # cards individuais
 shot("card_waveform.png", win.wave)
 shot("card_spectrum_curve.png", win.spectrum)
@@ -57,6 +58,10 @@ shot("card_set.png", win.tracks_card)
 shot("card_levels.png", win.peak)
 for m, name in ((0, "gonio"), (1, "polar"), (2, "field")):
     win.stereo_mode = m; shot(f"card_stereo_{name}.png", win.stereo)
+# presets
+win.set_preset(1); shot("preset_master.png")
+win.set_preset(2); shot("preset_analise.png")
+win.set_preset(0)
 # modo foco
 win.stereo_mode = 0; win.focus, win.focus_pos = 2, "bottom"; win.relayout(); shot("focus_stereo_bottom.png")
 win.spec_mode = 3; win.focus, win.focus_pos = 1, "right"; win.relayout(); shot("focus_key_right.png")

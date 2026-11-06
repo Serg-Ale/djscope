@@ -409,7 +409,13 @@ class Card(QtWidgets.QWidget):
             self._pos_rect = QRectF(right - 22, r.top() + 10, 22, 21)
             self._draw_pos_icon(p, self._pos_rect)
             right -= 30
-        if self.chips and not compact:
+        chips_fit = False
+        if self.chips:                                                  # os botões de modo só somem se NÃO couberem no título
+            p.setFont(font(10, weight=QFont.DemiBold, spacing=1.3))
+            fm0 = QFontMetricsF(p.font())
+            need = sum(fm0.horizontalAdvance(c) + 18 for c in self.chips) + 6 * (len(self.chips) - 1)
+            chips_fit = need <= (right - title_end - 28)
+        if self.chips and chips_fit:
             p.setFont(font(10, weight=QFont.DemiBold, spacing=1.3))
             fm = QFontMetricsF(p.font())
             for i in reversed(range(len(self.chips))):
@@ -425,11 +431,12 @@ class Card(QtWidgets.QWidget):
                 right -= w + 6
             right -= 6
         rt = self.right_text()
-        if rt and not compact:
+        if rt:
             p.setFont(font(11, MONO_FONT))
-            p.setPen(qc((78, 86, 118)))
             fm = QFontMetricsF(p.font())
-            p.drawText(QPointF(right - fm.horizontalAdvance(rt), r.top() + 25), rt)
+            if right - fm.horizontalAdvance(rt) - 16 > title_end:      # só desenha se couber sem encostar no título
+                p.setPen(qc((78, 86, 118)))
+                p.drawText(QPointF(right - fm.horizontalAdvance(rt), r.top() + 25), rt)
         self.title_extra(p, r, title_end)
         body = QRectF(r.left() + 16, r.top() + 38, r.width() - 32, r.height() - 52)
         if body.width() < 40 or body.height() < 30: return
@@ -439,77 +446,212 @@ class Card(QtWidgets.QWidget):
         p.restore()
 
 
-class Header(QtWidgets.QWidget):
+def bass_status(sa):
+    """Estado da checagem de mono do grave (<120 Hz): (texto, cor)."""
+    bw, bl = sa.bass_width, sa.bass_loss
+    if bw < 0.10 and bl < 1.0: return "MONO OK", GREEN
+    if bl < 3.0 and bw < 0.30: return "GRAVE ABRINDO", (250, 205, 60)
+    if bl >= 3.0: return "FORA DE FASE", RED
+    return "GRAVE LARGO", RED
+
+
+PRESET_NAMES = ("MIX", "MASTER", "ANÁLISE")
+
+
+class DecisionBar(QtWidgets.QWidget):
+    """Faixa fixa no topo com o que decide a mixagem: BPM, tonalidade (e as compatíveis), frase, loudness,
+    true peak e mono do grave. Também troca os presets (F1 MIX · F2 MASTER · F3 ANÁLISE)."""
+    H = 78
+
     def __init__(self, app):
         super().__init__()
         self.app = app
-        self.setFixedHeight(84)
+        self.setFixedHeight(self.H)
+        self.setMouseTracking(True)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self._pills, self._hover = [], -1
+
+    # ---- preset pills
+    def mouseMoveEvent(self, e):
+        h = next((i for r, i in self._pills if r.contains(e.position())), -1)
+        if h != self._hover:
+            self._hover = h; self.setCursor(Qt.PointingHandCursor if h >= 0 else Qt.ArrowCursor); self.update()
+
+    def mousePressEvent(self, e):
+        for r, i in self._pills:
+            if r.contains(e.position()): self.app.set_preset(i); return
+
+    def leaveEvent(self, e):
+        self._hover = -1; self.update()
+
+    # ---- blocos (cada um desenha a partir de x e devolve a largura usada)
+    def _label(self, p, x, y, txt):
+        p.setFont(font(9, weight=QFont.DemiBold, spacing=1.5)); p.setPen(qc(DIM)); p.drawText(QPointF(x, y), txt)
+
+    def _bpm(self, p, x, r):
+        e = self.app.eng
+        sure = e.conf >= 0.2
+        txt = (f"{e.bpm:.1f}" if sure else f"~{e.bpm:.0f}") if e.bpm else "---"
+        col = tuple(ACC[i] + (255 - ACC[i]) * e.pulse * 0.65 for i in range(3)) if sure else (150, 138, 118)
+        self._label(p, x, r.top() + 19, "BPM")
+        p.setFont(font(36, MONO_FONT, QFont.Medium)); p.setPen(qc(col))
+        p.drawText(QPointF(x, r.top() + 60), txt)
+        w = QFontMetricsF(p.font()).horizontalAdvance(txt)
+        pos = e.phr.pos(); cur = pos[0] if pos else -1
+        for b in range(4):                                             # 4 LEDs: o 1 do compasso é vermelho
+            cx, cy = x + w + 22 + b * 18, r.top() + 46
+            if b == cur:
+                bc = (255, 84, 66) if b == 0 else ACC
+                gl = QRadialGradient(QPointF(cx, cy), 15)
+                gl.setColorAt(0, qc(bc, 150 + 100 * e.pulse)); gl.setColorAt(1, qc(bc, 0))
+                p.setPen(Qt.NoPen); p.setBrush(gl); p.drawEllipse(QPointF(cx, cy), 15, 15)
+                p.setBrush(qc(tuple(bc[i] + (255 - bc[i]) * e.pulse * 0.7 for i in range(3))))
+            else:
+                p.setPen(Qt.NoPen); p.setBrush(qc((40, 45, 64)))
+            p.drawEllipse(QPointF(cx, cy), 5.5, 5.5)
+        return w + 22 + 4 * 18 + 6
+
+    def _key(self, p, x, r, full=True):
+        e = self.app.eng
+        ky = e.key_info()
+        self._label(p, x, r.top() + 19, "TONALIDADE")
+        if not ky:
+            p.setFont(font(13)); p.setPen(qc((78, 86, 118))); p.drawText(QPointF(x, r.top() + 50), "analisando…")
+            return 150
+        cc = camelot_rgb(ky["camelot"]); dim = ky["level"] == "baixa"
+        br = QRectF(x, r.top() + 26, 66, 38)
+        p.setPen(Qt.NoPen); p.setBrush(qc(cc, 34 if dim else 60)); p.drawRoundedRect(br, 9, 9)
+        p.setPen(QPen(qc(cc, 110 if dim else 230), 1.4)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(br, 9, 9)
+        p.setFont(font(23, MONO_FONT, QFont.Medium)); p.setPen(qc(cc, 150 if dim else 255))
+        p.drawText(br, Qt.AlignCenter, ky["camelot"] + ("?" if dim else ""))
+        p.setFont(font(13, MONO_FONT, QFont.Medium)); p.setPen(qc(TXT))
+        p.drawText(QPointF(x + 78, r.top() + 42), ky["name"])
+        lc = {"alta": (96, 232, 140), "média": (250, 205, 60), "baixa": (255, 112, 90)}[ky["level"]]
+        p.setPen(Qt.NoPen); p.setBrush(qc(lc)); p.drawEllipse(QPointF(x + 82, r.top() + 54), 3.5, 3.5)
+        p.setFont(font(10)); p.setPen(qc(DIM)); p.drawText(QPointF(x + 91, r.top() + 58), f"{ky['level']}")
+        if not full: return 190
+        nn, l2 = int(ky["camelot"][:-1]), ky["camelot"][-1]
+        opp = "A" if l2 == "B" else "B"
+        combos = (f"{(nn - 2) % 12 + 1}{l2}", f"{nn % 12 + 1}{l2}", f"{nn}{opp}", f"{(nn + 1) % 12 + 1}{l2}")
+        x2 = x + 176
+        self._label(p, x2, r.top() + 19, "COMBINA COM")
+        for i, code in enumerate(combos):
+            c2 = camelot_rgb(code)
+            rr = QRectF(x2 + i * 46, r.top() + 30, 41, 24)
+            p.setPen(Qt.NoPen); p.setBrush(qc(c2, 52)); p.drawRoundedRect(rr, 7, 7)
+            p.setFont(font(12, MONO_FONT, QFont.Medium)); p.setPen(qc(c2)); p.drawText(rr, Qt.AlignCenter, code)
+        p.setFont(font(8, weight=QFont.DemiBold, spacing=0.6)); p.setPen(qc((78, 86, 118)))
+        for i, t in enumerate(("−1", "+1", "REL", "+2")):
+            p.drawText(QRectF(x2 + i * 46, r.top() + 56, 41, 11), Qt.AlignHCenter, t)
+        return 176 + 4 * 46
+
+    def _phrase(self, p, x, r):
+        e = self.app.eng
+        pos = e.phr.pos()
+        ok = bool(pos) and e.phr.phr_conf > 0.12 and e.phr.bars >= 12
+        self._label(p, x, r.top() + 19, "FRASE" if ok else "FRASE  ~")
+        bip = pos[1] if pos else -1
+        for i in range(8):
+            rr = QRectF(x + i * 20, r.top() + 28, 16, 22)
+            lit = (i == bip)
+            p.setPen(Qt.NoPen)
+            if ok: p.setBrush(qc(ACC) if (lit and i == 0) else qc((255, 255, 255), 235) if lit else qc((70, 78, 108), 150) if i < bip else qc((38, 43, 62)))
+            else: p.setBrush(qc((90, 98, 130), 110) if lit else qc((38, 43, 62)))
+            p.drawRoundedRect(rr, 4, 4)
+        left = 8 - bip if pos else 0
+        p.setFont(font(22, MONO_FONT, QFont.Medium)); p.setPen(qc(ACC if ok and left <= 2 else (120, 128, 160)))
+        p.drawText(QPointF(x + 172, r.top() + 49), (f"−{left}" if ok else "?"))
+        if pos:
+            p.setFont(font(9, MONO_FONT)); p.setPen(qc((78, 86, 118)))
+            p.drawText(QPointF(x, r.top() + 66), f"compasso {bip + 1}/8  ·  batida {pos[0] + 1}")
+        return 232
+
+    def _lufs(self, p, x, r):
+        e = self.app.eng
+        self._label(p, x, r.top() + 19, "LUFS")
+        for i, (lab, val) in enumerate((("MOMENT.", e.lufs_m), ("INTEGR.", e.lufs_i))):
+            xx = x + i * 98
+            p.setFont(font(8, weight=QFont.DemiBold, spacing=0.8)); p.setPen(qc((78, 86, 118))); p.drawText(QPointF(xx, r.top() + 36), lab)
+            p.setFont(font(24, MONO_FONT, QFont.Medium)); p.setPen(qc(ACC2))
+            p.drawText(QPointF(xx, r.top() + 62), "---" if val is None else f"{val:.1f}")
+        return 196
+
+    def _tp(self, p, x, r):
+        e = self.app.eng
+        tp = e.tp_max
+        col = RED if tp > 0 else ACC if tp > -1 else GREEN
+        self._label(p, x, r.top() + 19, "TRUE PEAK")
+        p.setFont(font(24, MONO_FONT, QFont.Medium)); p.setPen(qc(col if tp > -80 else DIM))
+        txt = f"{tp:+.1f}" if tp > -80 else "--"
+        p.drawText(QPointF(x, r.top() + 54), txt)
+        w = QFontMetricsF(p.font()).horizontalAdvance(txt)
+        p.setFont(font(9, MONO_FONT)); p.setPen(qc((78, 86, 118))); p.drawText(QPointF(x + w + 5, r.top() + 54), "dBTP")
+        if e.clips > 0:
+            p.setFont(font(10, weight=QFont.DemiBold)); p.setPen(qc(RED)); p.drawText(QPointF(x, r.top() + 69), f"● {e.clips} clip{'s' if e.clips > 1 else ''}")
+        return max(110, w + 50)
+
+    def _bass(self, p, x, r):
+        sa = self.app.sa
+        txt, col = bass_status(sa)
+        self._label(p, x, r.top() + 19, "GRAVE < 120 Hz")
+        p.setFont(font(10, weight=QFont.Bold, spacing=1.2))
+        tw = QFontMetricsF(p.font()).horizontalAdvance(txt) + 32
+        pill = QRectF(x, r.top() + 28, tw, 24)
+        p.setPen(QPen(qc(col, 150), 1)); p.setBrush(qc(col, 34)); p.drawRoundedRect(pill, 12, 12)
+        p.setPen(Qt.NoPen); p.setBrush(qc(col)); p.drawEllipse(QPointF(pill.left() + 12, pill.center().y()), 3.8, 3.8)
+        p.setPen(qc(col)); p.drawText(QRectF(pill.left() + 22, pill.top(), pill.width() - 22, pill.height()), Qt.AlignVCenter | Qt.AlignLeft, txt)
+        p.setFont(font(9, MONO_FONT)); p.setPen(qc((90, 98, 130)))
+        p.drawText(QPointF(x, r.top() + 68), f"lateral {int(sa.bass_width * 100)}%  ·  mono {-sa.bass_loss:+.1f} dB")
+        return max(tw, 168)
 
     def paintEvent(self, ev):
-        a, e = self.app, self.app.eng
+        a = self.app
         p = QPainter(self)
         p.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
         p.fillRect(self.rect(), qc(BG))
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setPen(QPen(qc(BORDER), 1)); p.setBrush(qc(CARD))
-        p.drawRoundedRect(r, 11, 11)
-        # marca
-        p.setFont(font(15, weight=QFont.Bold, spacing=3.2))
-        p.setPen(qc(TXT))
-        p.drawText(QPointF(22, 36), "DJSCOPE")
-        p.setFont(font(11, MONO_FONT)); p.setPen(qc((78, 86, 118)))
-        p.drawText(QPointF(22, 58), a.src_name)
-        # BPM
-        x = 190
-        p.setFont(font(10, weight=QFont.DemiBold, spacing=1.6)); p.setPen(qc(DIM))
-        p.drawText(QPointF(x, 28), "BPM")
-        bpm = f"{e.bpm:.1f}" if e.bpm else "---"
-        pulse = e.pulse
-        col = tuple(ACC[i] + (255 - ACC[i]) * pulse * 0.6 for i in range(3))
-        p.setFont(font(40, MONO_FONT, QFont.Medium)); p.setPen(qc(col))
-        p.drawText(QPointF(x, 68), bpm)
-        # LEDs
-        bp = e.beat_pos()
-        cur = int(math.floor(bp)) % 4 if bp is not None else -1
-        for b in range(4):
-            cx, cy = x + 150 + b * 22, 50
-            lit = (b == cur)
-            if lit:
-                base = (255, 80, 64) if b == 0 else ACC
-                glow = QRadialGradient(QPointF(cx, cy), 15)
-                glow.setColorAt(0, qc(base, 150 + 100 * pulse)); glow.setColorAt(1, qc(base, 0))
-                p.setPen(Qt.NoPen); p.setBrush(glow); p.drawEllipse(QPointF(cx, cy), 15, 15)
-                p.setBrush(qc(tuple(base[i] + (255 - base[i]) * pulse * 0.7 for i in range(3))))
-            else:
-                p.setPen(Qt.NoPen); p.setBrush(qc((40, 45, 64)))
-            p.drawEllipse(QPointF(cx, cy), 5, 5)
-        # divisor + métricas
-        li = e.lufs_i
-        peakc = RED if e.max_peak > -1 else ACC if e.max_peak > -6 else TXT
-        items = [("MOMENTARY", f"{e.lufs_m:.1f}", "LUFS", ACC2), ("SHORT", f"{e.lufs_s:.1f}", "LUFS", ACC2),
-                 ("INTEGRATED", "---" if li is None else f"{li:.1f}", "LUFS", ACC2),
-                 ("PEAK", f"{e.max_peak:.1f}", "dBFS", peakc),
-                 ("PLR", "---" if li is None else f"{e.max_peak - li:.1f}", "dB", TXT)]
-        x0 = 440
-        avail = self.width() - x0 - 20
-        order = [0, 2, 3, 1, 4]                      # prioridade: momentary, integrated, peak, short, plr
-        nfit = max(1, min(len(items), int(avail // 118)))
-        keep = sorted(order[:nfit])
-        items = [items[i] for i in keep]
-        step = avail / len(items)
-        for i, (lab, val, unit, c) in enumerate(items):
-            xx = x0 + i * step
-            p.setPen(QPen(qc(BORDER), 1)); p.drawLine(QPointF(xx - 10, 16), QPointF(xx - 10, 68))
-            p.setFont(font(10, weight=QFont.DemiBold, spacing=1.6)); p.setPen(qc(DIM))
-            p.drawText(QPointF(xx + 6, 28), lab)
-            wide = step >= 175
-            p.setFont(font(30 if wide else 24, MONO_FONT, QFont.Medium)); p.setPen(qc(c))
-            p.drawText(QPointF(xx + 6, 64), val)
-            if wide:
-                fm = QFontMetricsF(p.font())
-                p.setFont(font(11, MONO_FONT)); p.setPen(qc((78, 86, 118)))
-                p.drawText(QPointF(xx + 6 + fm.horizontalAdvance(val) + 6, 64), unit)
+        p.setPen(QPen(qc(BORDER), 1)); p.setBrush(qc(CARD)); p.drawRoundedRect(r, 11, 11)
+        # pills de preset, à direita
+        p.setFont(font(10, weight=QFont.DemiBold, spacing=1.2))
+        fm = QFontMetricsF(p.font())
+        names = [f"F{i + 1}  {n}" for i, n in enumerate(PRESET_NAMES)]
+        widths = [fm.horizontalAdvance(n) + 26 for n in names]
+        total = sum(widths) + 6 * (len(widths) - 1)
+        self._pills = []
+        px = r.right() - 14 - total
+        show_pills = r.width() > 1100
+        if show_pills:
+            for i, (n, w) in enumerate(zip(names, widths)):
+                rect = QRectF(px, r.center().y() - 14, w, 28)
+                act = (i == a.preset)
+                p.setPen(Qt.NoPen); p.setBrush(qc(ACC, 50) if act else qc((34, 39, 56)) if i == self._hover else qc((24, 28, 42)))
+                p.drawRoundedRect(rect, 14, 14)
+                p.setPen(qc(ACC) if act else qc(TXT) if i == self._hover else qc(DIM)); p.drawText(rect, Qt.AlignCenter, n)
+                self._pills.append((rect, i)); px += w + 6
+        avail = (px - 18 if show_pills else r.right() - 14) - (r.left() + 18)
+        # o que cabe, por prioridade; a tonalidade perde a lista "combina com" antes de sumir
+        want = [("bpm", 230), ("key", 394), ("phrase", 232), ("tp", 120), ("lufs", 196), ("bass", 176)]
+        sep = 26
+        chosen, used = [], 0
+        for name, w in want:
+            if name == "key" and used + w + sep > avail and used + 190 + sep <= avail:
+                chosen.append(("key_small", 190)); used += 190 + sep
+            elif used + w + sep <= avail or not chosen:
+                chosen.append((name, w)); used += w + sep
+        order = {"bpm": 0, "key": 1, "key_small": 1, "phrase": 2, "lufs": 3, "tp": 4, "bass": 5}
+        chosen.sort(key=lambda t: order[t[0]])
+        x = r.left() + 20
+        for i, (name, w) in enumerate(chosen):
+            if i:
+                p.setPen(QPen(qc(BORDER), 1)); p.drawLine(QPointF(x - sep / 2, r.top() + 14), QPointF(x - sep / 2, r.bottom() - 14))
+            if name == "bpm": used_w = self._bpm(p, x, r)
+            elif name == "key": used_w = self._key(p, x, r, True)
+            elif name == "key_small": used_w = self._key(p, x, r, False)
+            elif name == "phrase": used_w = self._phrase(p, x, r)
+            elif name == "lufs": used_w = self._lufs(p, x, r)
+            elif name == "tp": used_w = self._tp(p, x, r)
+            else: used_w = self._bass(p, x, r)
+            x += max(used_w, w if name in ("bpm", "phrase") else used_w) + sep
 
 
 class WaveCard(Card):
@@ -526,83 +668,6 @@ class WaveCard(Card):
 
     def right_text(self):
         return f"{self.app.wave_secs():.0f}s  ·  grid {'on' if self.app.grid else 'off'}"
-
-    def title_extra(self, p, r, x):
-        a, e = self.app, self.app.eng
-        x += 34
-        base = r.top() + 31
-        small = self.width() < 760
-        # BPM grande, pisca no kick
-        sure = e.conf >= 0.2                                           # confiança baixa: mostra com "~" e apagado
-        bpm = (f"{e.bpm:.1f}" if sure else f"~{e.bpm:.0f}") if e.bpm else "---"
-        col = tuple(ACC[i] + (255 - ACC[i]) * e.pulse * 0.65 for i in range(3)) if sure else (150, 138, 118)
-        p.setFont(font(26, MONO_FONT, QFont.Medium)); p.setPen(qc(col))
-        p.drawText(QPointF(x, base), bpm)
-        x += QFontMetricsF(p.font()).horizontalAdvance(bpm) + 6
-        p.setFont(font(10, weight=QFont.DemiBold, spacing=1.6)); p.setPen(qc(DIM))
-        p.drawText(QPointF(x, base), "BPM")
-        x += 44
-        # tonalidade (Camelot)
-        ky = e.key_info()
-        if ky and not small:
-            cc = camelot_rgb(ky["camelot"]); dimk = ky["level"] == "baixa"
-            br = QRectF(x - 6, r.top() + 10, 50, 25)
-            p.setPen(Qt.NoPen); p.setBrush(qc(cc, 30 if dimk else 56)); p.drawRoundedRect(br, 7, 7)
-            p.setPen(QPen(qc(cc, 110 if dimk else 220), 1.2)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(br, 7, 7)
-            p.setFont(font(16, MONO_FONT, QFont.Medium)); p.setPen(qc(cc, 150 if dimk else 255))
-            p.drawText(br, Qt.AlignCenter, ky["camelot"] + ("?" if dimk else ""))
-            p.setFont(font(10, MONO_FONT)); p.setPen(qc((90, 98, 130)))
-            p.drawText(QPointF(br.right() + 8, base - 4), ky["name"])
-            x = br.right() + 8 + QFontMetricsF(p.font()).horizontalAdvance(ky["name"]) + 22
-        elif ky and self.width() >= 400:                              # miniatura muito estreita: sem badge (colidiria com os ícones)
-            cc = camelot_rgb(ky["camelot"])
-            br = QRectF(x - 6, r.top() + 10, 50, 25)
-            p.setPen(Qt.NoPen); p.setBrush(qc(cc, 56)); p.drawRoundedRect(br, 7, 7)
-            p.setFont(font(16, MONO_FONT, QFont.Medium)); p.setPen(qc(cc)); p.drawText(br, Qt.AlignCenter, ky["camelot"])
-        if small: return
-        # LEDs: 1 vermelho (início de compasso), 2-4 âmbar
-        pos = e.phr.pos()
-        cur = pos[0] if pos else -1
-        for b in range(4):
-            cx, cy = x + b * 20, r.top() + 22
-            if b == cur:
-                bc = (255, 84, 66) if b == 0 else ACC
-                gl = QRadialGradient(QPointF(cx, cy), 14)
-                gl.setColorAt(0, qc(bc, 150 + 100 * e.pulse)); gl.setColorAt(1, qc(bc, 0))
-                p.setPen(Qt.NoPen); p.setBrush(gl); p.drawEllipse(QPointF(cx, cy), 14, 14)
-                p.setBrush(qc(tuple(bc[i] + (255 - bc[i]) * e.pulse * 0.7 for i in range(3))))
-            else:
-                p.setPen(Qt.NoPen); p.setBrush(qc((40, 45, 64)))
-            p.drawEllipse(QPointF(cx, cy), 5, 5)
-        x += 4 * 20 + 14
-        # frase: 8 compassos, o atual aceso; início de frase em âmbar
-        if pos and self.width() > 1000:
-            bip, ok = pos[1], e.phr.phr_conf > 0.12 and e.phr.bars >= 12
-            for i in range(8):
-                rr = QRectF(x + i * 13, r.top() + 19, 10, 13)
-                lit = (i == bip)
-                p.setPen(Qt.NoPen)
-                if ok:
-                    p.setBrush(qc(ACC) if (lit and i == 0) else qc((255, 255, 255), 235) if lit else qc((70, 78, 108), 150) if i < bip else qc((38, 43, 62)))
-                else:
-                    p.setBrush(qc((90, 98, 130), 110) if lit else qc((38, 43, 62)))
-                p.drawRoundedRect(rr, 3, 3)
-            p.setFont(font(9, weight=QFont.DemiBold, spacing=1.3)); p.setPen(qc(DIM))
-            left = 8 - bip
-            p.drawText(QPointF(x, r.top() + 14), "FRASE" if ok else "FRASE ~")
-            p.setFont(font(11, MONO_FONT, QFont.Medium)); p.setPen(qc(ACC if ok and left <= 2 else (110, 118, 150)))
-            p.drawText(QPointF(x + 8 * 13 + 4, r.top() + 31), (f"−{left}" if ok else "?"))
-            x += 8 * 13 + 40
-        # LUFS
-        for lab, val in (("LUFS-M", e.lufs_m), ("LUFS-I", e.lufs_i)):
-            txt = "---" if val is None else f"{val:.1f}"
-            p.setPen(QPen(qc(BORDER), 1)); p.drawLine(QPointF(x - 12, r.top() + 12), QPointF(x - 12, r.top() + 32))
-            p.setFont(font(17, MONO_FONT, QFont.Medium)); p.setPen(qc(ACC2))
-            p.drawText(QPointF(x, base - 3), txt)
-            w = QFontMetricsF(p.font()).horizontalAdvance(txt)
-            p.setFont(font(9, weight=QFont.DemiBold, spacing=1.3)); p.setPen(qc(DIM))
-            p.drawText(QPointF(x + w + 6, base - 3), lab)
-            x += w + 74
 
     def chip_active(self): return self.app.theme_i % 2
     def chip_select(self, i): self.app.theme_i = i
@@ -984,8 +1049,9 @@ class SpectrumCard(Card):
             p.setFont(font(12, weight=QFont.DemiBold)); p.setPen(qc(TXT))
             p.drawText(QPointF(zl.left() + 18, ly), f"confiança {lv}")
             p.setFont(font(10, MONO_FONT)); p.setPen(qc((78, 86, 118)))
-            p.drawText(QPointF(zl.left() + 2, ly + 17), f"corr {ky['conf']:.2f}  ·  margem {ky['margin']:.2f}  ·  estável {int(ky['stab'] * 100)}%")
-            yy2 = ly + 38
+            p.drawText(QPointF(zl.left() + 2, ly + 17), f"corr {ky['conf']:.2f}  ·  margem {ky['margin']:.2f}")
+            p.drawText(QPointF(zl.left() + 2, ly + 31), f"estável {int(ky['stab'] * 100)}%")
+            yy2 = ly + 52
             if lv != "alta" and zl.height() > yy2 - zl.top():
                 p.setFont(font(11)); p.setPen(qc(DIM))
                 p.drawText(QPointF(zl.left() + 2, yy2), "ou  ")
@@ -993,7 +1059,7 @@ class SpectrumCard(Card):
                 p.drawText(QPointF(zl.left() + 26, yy2), f"{ky['alt_name']}  {ky['alt_camelot']}")
                 yy2 += 30
             # mixagem harmônica: as 4 vizinhas clássicas da roda
-            if zl.height() > yy2 - zl.top() + 80:
+            if zl.height() > yy2 - zl.top() + 40:
                 nn, l2 = int(ky["camelot"][:-1]), ky["camelot"][-1]
                 opp = "A" if l2 == "B" else "B"
                 combos = ((f"{(nn - 2) % 12 + 1}{l2}", "−1"), (f"{nn % 12 + 1}{l2}", "+1"), (f"{nn}{opp}", "relativa"), (f"{(nn + 1) % 12 + 1}{l2}", "+2 energia"))
@@ -1001,6 +1067,7 @@ class SpectrumCard(Card):
                 p.drawText(QPointF(zl.left() + 2, yy2), "COMBINA COM")
                 for i_, (code, why) in enumerate(combos):
                     cy_ = yy2 + 12 + i_ * 30
+                    if cy_ + 26 > zl.bottom(): break                      # só as linhas que cabem
                     cc_ = camelot_rgb(code)
                     rr_ = QRectF(zl.left() + 2, cy_, 52, 23)
                     p.setPen(Qt.NoPen); p.setBrush(qc(cc_, 52)); p.drawRoundedRect(rr_, 7, 7)
@@ -1497,10 +1564,7 @@ class StereoCard(Card):
         """Checagem de mono do grave (<120 Hz): sistemas de clube costumam somar o grave em mono."""
         sa = self.app.sa
         bw, bl, ml = sa.bass_width, sa.bass_loss, sa.mono_loss
-        if bw < 0.10 and bl < 1.0: txt, col = "MONO OK", GREEN
-        elif bl < 3.0 and bw < 0.30: txt, col = "GRAVE ABRINDO", (250, 205, 60)
-        elif bl >= 3.0: txt, col = "FORA DE FASE", RED
-        else: txt, col = "GRAVE LARGO", RED
+        txt, col = bass_status(sa)
         p.setFont(font(9, weight=QFont.DemiBold, spacing=1.2)); p.setPen(qc(DIM))
         p.drawText(QPointF(r.left() + 6, r.top() + 15), "GRAVE < 120 Hz")
         lab_w = QFontMetricsF(p.font()).horizontalAdvance("GRAVE < 120 Hz") + 14
@@ -1510,17 +1574,20 @@ class StereoCard(Card):
         p.setPen(QPen(qc(col, 150), 1)); p.setBrush(qc(col, 34)); p.drawRoundedRect(pill, 10, 10)
         p.setPen(Qt.NoPen); p.setBrush(qc(col)); p.drawEllipse(QPointF(pill.left() + 11, pill.center().y()), 3.5, 3.5)
         p.setPen(qc(col)); p.drawText(QRectF(pill.left() + 20, pill.top(), pill.width() - 20, pill.height()), Qt.AlignVCenter | Qt.AlignLeft, txt)
-        p.setFont(font(10, MONO_FONT)); p.setPen(qc((120, 128, 160)))
+        p.setFont(font(10, MONO_FONT))
         det = f"lateral {int(bw * 100)}%  ·  soma mono {-bl:+.1f} dB"
+        det_w = QFontMetricsF(p.font()).horizontalAdvance(det)
         x = pill.right() + 12
-        if r.right() - x > 150:
-            p.drawText(QRectF(x, r.top(), r.right() - x, 24), Qt.AlignVCenter | Qt.AlignLeft, det)
-        # perda total ao colapsar em mono (todas as frequências)
         mc = GREEN if ml < 1.5 else (250, 205, 60) if ml < 3 else RED
         tot = f"SOMA MONO TOTAL {-ml:+.1f} dB"
-        p.setFont(font(9, weight=QFont.DemiBold, spacing=1.1)); p.setPen(qc(mc))
+        p.setFont(font(9, weight=QFont.DemiBold, spacing=1.1))
         tw2 = QFontMetricsF(p.font()).horizontalAdvance(tot)
-        if r.right() - 6 - tw2 > x + 150: p.drawText(QPointF(r.right() - 6 - tw2, r.top() + 15), tot)
+        room = r.right() - 6 - x
+        if room >= det_w + tw2 + 24:                                   # cabe tudo
+            p.setFont(font(10, MONO_FONT)); p.setPen(qc((120, 128, 160))); p.drawText(QRectF(x, r.top(), det_w + 4, 24), Qt.AlignVCenter | Qt.AlignLeft, det)
+            p.setFont(font(9, weight=QFont.DemiBold, spacing=1.1)); p.setPen(qc(mc)); p.drawText(QPointF(r.right() - 6 - tw2, r.top() + 15), tot)
+        elif room >= tw2 + 12:                                         # só o total (o mais importante)
+            p.setPen(qc(mc)); p.drawText(QPointF(r.right() - 6 - tw2, r.top() + 15), tot)
 
     def _strip(self, p, r, widths=False):
         e, sa = self.app.eng, self.app.sa
@@ -1849,7 +1916,7 @@ class Main(QtWidgets.QWidget):
         self.setWindowTitle("DJScope")
         self.setMinimumSize(980, 620)
         self.setStyleSheet(f"background:rgb{BG};")
-        self.header = Header(self)
+        self.header = DecisionBar(self)
         self.wave, self.spectrum = WaveCard(self), SpectrumCard(self)
         self.sg, self.stereo, self.loud, self.peak = SpectrogramCard(self), StereoCard(self), LoudCard(self), PeakCard(self)
         self.tracks_card = TracklistCard(self)
@@ -1858,8 +1925,8 @@ class Main(QtWidgets.QWidget):
         self.cards = [self.wave, self.spectrum, self.stereo, self.sg, self.loud, self.peak, self.tracks_card]
         self.focus, self.focus_t = None, 0.0
         self.focus_pos = "right"                      # miniaturas: "right" (lateral) ou "bottom" (tira embaixo)
-        self.header.setVisible(False)                 # H alterna
-        self.relayout()
+        self.preset = 0                               # 0 MIX · 1 MASTER · 2 ANÁLISE (F1/F2/F3)
+        self.set_preset(0)                            # aplica layout e modos do preset (o estado salvo, se existir, vem depois)
         self.widgets = [self.header] + self.cards
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.PreciseTimer)
@@ -1871,6 +1938,24 @@ class Main(QtWidgets.QWidget):
     def focus_card(self):
         return None if self.focus is None else self.cards[self.focus]
 
+    # cada preset: modos dos cards + linhas [(altura relativa, [(card, colunas de 60), ...]), ...]; o que não está nele fica oculto
+    PRESETS = (
+        dict(spec=3, stereo=0, rows=[(34, [("wave", 60)]), (40, [("spectrum", 24), ("tracks", 18), ("stereo", 18)]),
+                                      (26, [("sg", 22), ("loud", 24), ("peak", 14)])]),
+        dict(spec=0, stereo=0, rows=[(24, [("wave", 60)]), (46, [("spectrum", 30), ("stereo", 30)]),
+                                      (30, [("loud", 24), ("peak", 12), ("sg", 24)])]),
+        dict(spec=2, stereo=2, rows=[(16, [("wave", 60)]), (50, [("spectrum", 34), ("stereo", 26)]),
+                                      (34, [("sg", 26), ("loud", 20), ("peak", 14)])]),
+    )
+
+    def set_preset(self, i, apply_modes=True):
+        self.preset = i % len(self.PRESETS)
+        if apply_modes:
+            self.spec_mode, self.stereo_mode = self.PRESETS[self.preset]["spec"], self.PRESETS[self.preset]["stereo"]
+        self.focus = None
+        self.relayout()
+        self.header.update()
+
     def relayout(self):
         g = self.glayout
         for w in [self.header] + self.cards: g.removeWidget(w)
@@ -1878,16 +1963,18 @@ class Main(QtWidgets.QWidget):
         NC = 60                                           # 60 colunas: divide bem por 12 (normal), 4/1 (lateral) e 5 (tira)
         for c in range(NC): g.setColumnStretch(c, 1)
         g.addWidget(self.header, 0, 0, 1, NC)
+        byname = dict(wave=self.wave, spectrum=self.spectrum, stereo=self.stereo, sg=self.sg, loud=self.loud,
+                      peak=self.peak, tracks=self.tracks_card)
         if self.focus is None:
-            g.addWidget(self.wave, 1, 0, 1, 60)
-            g.addWidget(self.spectrum, 2, 0, 1, 30)
-            g.addWidget(self.stereo, 2, 30, 1, 30)
-            g.addWidget(self.sg, 3, 0, 1, 18)
-            g.addWidget(self.loud, 3, 18, 1, 18)
-            g.addWidget(self.tracks_card, 3, 36, 1, 16)
-            g.addWidget(self.peak, 3, 52, 1, 8)
-            g.setRowStretch(1, 31); g.setRowStretch(2, 41); g.setRowStretch(3, 28)
+            shown = set()
+            for ri, (stretch, items) in enumerate(self.PRESETS[self.preset]["rows"]):
+                col = 0
+                for name, span in items:
+                    g.addWidget(byname[name], 1 + ri, col, 1, span); col += span; shown.add(name)
+                g.setRowStretch(1 + ri, stretch)
+            for name, w in byname.items(): w.setVisible(name in shown)         # fora do preset = oculto (volta no modo foco)
         else:
+            for w in self.cards: w.setVisible(True)
             main = self.cards[self.focus]
             others = [c for i, c in enumerate(self.cards) if i != self.focus]
             if self.focus_pos == "right":
@@ -2009,6 +2096,7 @@ class Main(QtWidgets.QWidget):
         elif k in (Qt.Key_Minus, Qt.Key_Underscore): self.cpp = min(4, self.cpp + 1)
         elif k == Qt.Key_R: self.eng.reset_meters()
         elif k == Qt.Key_H: self.header.setVisible(not self.header.isVisible())
+        elif k in (Qt.Key_F1, Qt.Key_F2, Qt.Key_F3): self.set_preset(k - Qt.Key_F1)
         elif k == Qt.Key_S: self.stereo_mode = (self.stereo_mode + 1) % 3
         elif k == Qt.Key_D: self.spec_mode = (self.spec_mode + 1) % 4
         elif k == Qt.Key_N:
@@ -2031,7 +2119,8 @@ class Main(QtWidgets.QWidget):
             self.theme_i = int(s.get("theme_i", 0))
             self.cpp = min(4, max(1, int(s.get("cpp", 1))))
             self.grid = bool(s.get("grid", True))
-            self.header.setVisible(bool(s.get("header", False)))
+            self.header.setVisible(bool(s.get("decision", True)))
+            self.preset = int(s.get("preset", 0)) % len(self.PRESETS)
             self.focus_pos = s.get("focus_pos", "right") if s.get("focus_pos") in ("right", "bottom") else "right"
             f = s.get("focus")
             self.focus = f if isinstance(f, int) and 0 <= f < len(self.cards) else None
@@ -2045,7 +2134,7 @@ class Main(QtWidgets.QWidget):
             import json
             os.makedirs(os.path.dirname(self.STATE), exist_ok=True)
             data = dict(stereo_mode=self.stereo_mode, spec_mode=self.spec_mode, theme_i=self.theme_i, cpp=self.cpp,
-                        grid=self.grid, header=self.header.isVisible(), focus=self.focus, focus_pos=self.focus_pos,
+                        grid=self.grid, decision=self.header.isVisible(), preset=self.preset, focus=self.focus, focus_pos=self.focus_pos,
                         w=self.width(), h=self.height())
             tmp = self.STATE + ".tmp"
             with open(tmp, "w") as f_:
@@ -2073,10 +2162,11 @@ def main():
     ap.add_argument("--secs", type=float, default=130)
     ap.add_argument("--size", default="1600x960")
     ap.add_argument("--theme", type=int, default=0)
-    ap.add_argument("--stereo", type=int, default=0)
+    ap.add_argument("--stereo", type=int, default=-1)
     ap.add_argument("--focus", type=int, default=-1)
+    ap.add_argument("--preset", type=int, default=-1)
     ap.add_argument("--focus-pos", default="right")
-    ap.add_argument("--spec", type=int, default=0)
+    ap.add_argument("--spec", type=int, default=-1)
     a = ap.parse_args()
     if a.shot: os.environ["QT_QPA_PLATFORM"] = "offscreen"
     app = QtWidgets.QApplication(sys.argv[:1])
@@ -2089,9 +2179,12 @@ def main():
         win.timer.stop()
         win.offline = True
         win.tracklog.t0 = win.wall_now()
+        if a.preset >= 0: win.set_preset(a.preset)
         win.focus_pos = a.focus_pos
         if a.focus >= 0: win.focus = a.focus; win.relayout()
-        win.resize(W, H); win.theme_i = a.theme; win.stereo_mode = a.stereo; win.spec_mode = a.spec
+        win.resize(W, H); win.theme_i = a.theme
+        if a.stereo >= 0: win.stereo_mode = a.stereo
+        if a.spec >= 0: win.spec_mode = a.spec
         win.show(); app.processEvents()
         x = dm.get()
         for i in range(0, len(x), 800):
